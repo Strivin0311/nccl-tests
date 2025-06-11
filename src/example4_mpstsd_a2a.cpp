@@ -50,75 +50,56 @@
 } while (0)
 
 
-static uint64_t getHash(const char* string) {
-    // Based on DJB2a, result = result * 33 ^ char
-    uint64_t result = 5381;
-    for (int c = 0; string[c] != '\0'; c++){
-        result = ((result << 5) + result) ^ string[c];
-    }
-    return result;
-}
-
-/* Generate a hash of the unique identifying string for this host
- * that will be unique for both bare-metal and container instances
- * Equivalent of a hash of;
- *
- * $(hostname)$(cat /proc/sys/kernel/random/boot_id)
- *
- */
-#define HOSTID_FILE "/proc/sys/kernel/random/boot_id"
-static uint64_t getHostHash(const char* hostname) {
-    char hostHash[1024];
-
-    // Fall back is the hostname if something fails
-    (void) strncpy(hostHash, hostname, sizeof(hostHash));
-    int offset = strlen(hostHash);
-
-    FILE *file = fopen(HOSTID_FILE, "r");
-    if (file != NULL) {
-        char *p;
-        if (fscanf(file, "%ms", &p) == 1) {
-            strncpy(hostHash+offset, p, sizeof(hostHash)-offset-1);
-            free(p);
-        }
-    }
-    fclose(file);
-
-    // Make sure the string is terminated
-    hostHash[sizeof(hostHash)-1]='\0';
-
-    return getHash(hostHash);
-}
-
-
-static void getHostName(char* hostname, int maxlen) {
-    gethostname(hostname, maxlen);
-    for (int i=0; i< maxlen; i++) {
-      if (hostname[i] == '.') {
-          hostname[i] = '\0';
-          return;
-      }
-    }
-}
-
-  void checkCorrect(
-    std::vector<float>& host_send_buffer, 
+bool checkCorrect(
+    std::vector<float>& host_send_buffer,
     std::vector<float>& host_recv_buffer,
-    float* send_buffer, 
+    float* send_buffer,
     float* recv_buffer,
     int rank_id,
-    int comm_size_byte
+    int comm_size,
+    int comm_size_byte,
+    int chunk_size,
+    float init_offset
 ) {
     CUDACHECK(cudaMemcpy(host_send_buffer.data(), send_buffer, comm_size_byte, cudaMemcpyDeviceToHost));
     CUDACHECK(cudaMemcpy(host_recv_buffer.data(), recv_buffer, comm_size_byte, cudaMemcpyDeviceToHost));
 
-    float send_sum = accumulate(host_send_buffer.begin(), host_send_buffer.end(), 0.);
-    float recv_sum = accumulate(host_recv_buffer.begin(), host_recv_buffer.end(), 0.);
+    bool send_buffer_correct = true;
+    bool recv_buffer_correct = true;
 
-    std::cout << "For rank " << rank_id \
-    << " send sum: " << send_sum << " | " \
-    << " recv sum: " << recv_sum \
-    << std::endl;
+    // check send buffer
+    for (int i = 0; i < comm_size; ++i) {
+        float expected_value = rank_id + init_offset;
+        if (host_send_buffer[i] != expected_value) {
+            std::cout << "For rank " << rank_id \
+            << " Unexpected value in send buffer at idx " << i << " : " \
+            << host_send_buffer[i] << " | " << expected_value \
+            << std::endl;
+            send_buffer_correct = false;
+        }
+    }
+
+    // check recv buffer
+    for (int i = 0; i < comm_size; ++i) {
+        int chunk_id = i / chunk_size;
+        float expected_value = chunk_id + init_offset;
+        if (host_recv_buffer[i] != expected_value) {
+            std::cout << "For rank " << rank_id \
+            << " Unexpected value in recv buffer at idx " << i << " : " \
+            << host_recv_buffer[i] << " | " << expected_value \
+            << std::endl;
+            recv_buffer_correct = false;
+        }
+    }
+
+    if (send_buffer_correct) {
+        std::cout << "Rank " << rank_id << " send buffer is correct" << std::endl;
+    }
+    if (recv_buffer_correct) {
+        std::cout << "Rank " << rank_id << " recv buffer is correct" << std::endl;
+    }
+
+    return send_buffer_correct & recv_buffer_correct;
 }
 
 
@@ -129,18 +110,6 @@ int main(int argc, char* argv[]) {
     MPICHECK(MPI_Comm_rank(MPI_COMM_WORLD, &this_rank));
     MPICHECK(MPI_Comm_size(MPI_COMM_WORLD, &num_ranks));
 
-    // determine device id for this rank
-    int device_id = 0;
-    uint64_t hostHashs[num_ranks];
-    char hostname[1024];
-    getHostName(hostname, 1024);
-    hostHashs[this_rank] = getHostHash(hostname);
-    MPICHECK(MPI_Allgather(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, hostHashs, sizeof(uint64_t), MPI_BYTE, MPI_COMM_WORLD));
-    for (int p = 0; p < num_ranks; p++) {
-        if (p == this_rank) break;
-        if (hostHashs[p] == hostHashs[this_rank]) device_id++;
-    }
-
     // init nccl unique id at rank0 and broadcast to all ranks
     ncclUniqueId nccl_uid;
     if (this_rank == 0) ncclGetUniqueId(&nccl_uid);
@@ -150,30 +119,47 @@ int main(int argc, char* argv[]) {
         ss << std::hex << std::setw(2) << std::setfill('0') << (int)(unsigned char)nccl_uid.internal[i];
     }
 
-    // allocate send/recv buffer and cuda stream
-    int comm_size = 4 * 1024; int comm_size_byte = comm_size * sizeof(float); // 32K * sizeof(float) = 32K * 4B = 128KB
-    float init_value = (float) device_id + 0.5; // init value for send buffer (float)
-    float *send_buffer, *recv_buffer;
+    // set device and stream
     cudaStream_t stream;
-    CUDACHECK(cudaSetDevice(device_id));
-    CUDACHECK(cudaMalloc(&send_buffer, comm_size_byte)); initSendBuffer(send_buffer, comm_size, init_value);
-    CUDACHECK(cudaMalloc(&recv_buffer, comm_size_byte));
+    CUDACHECK(cudaSetDevice(this_rank));
     CUDACHECK(cudaStreamCreate(&stream));
 
+    // allocate and init send/recv buffer
+    int comm_size = 4 * 1024; int comm_size_byte = comm_size * sizeof(float); // 32K * sizeof(float) = 32K * 4B = 128KB
+    int chunk_size = comm_size / num_ranks;
+    float init_offset = 0.5;
+    float init_value = (float) this_rank + init_offset; // init value for send buffer (float)
+    float *send_buffer, *recv_buffer;
+    CUDACHECK(cudaMalloc(&send_buffer, comm_size_byte)); initSendBuffer(send_buffer, comm_size, init_value);
+    CUDACHECK(cudaMalloc(&recv_buffer, comm_size_byte));
+    
     // init nccl comm object
     ncclComm_t comm;
     NCCLCHECK(ncclCommInitRank(&comm, num_ranks, nccl_uid, this_rank));
 
     // call nccl comm primitives
-    NCCLCHECK(ncclAllReduce(
-        (const void*) send_buffer,
-        (void*) recv_buffer,
-        comm_size,
-        ncclFloat,
-        ncclSum,
-        comm,
-        stream
-    ));
+    NCCLCHECK(ncclGroupStart());
+    for (int i = 0; i < num_ranks; ++i) {
+        for (int j = 0; j < num_ranks; ++j) {
+            NCCLCHECK(ncclSend(
+                (const void*) (send_buffer + j * chunk_size),
+                chunk_size,
+                ncclFloat,
+                j,
+                comm,
+                stream
+            ));
+            NCCLCHECK(ncclRecv(
+                (void *) (recv_buffer + j * chunk_size),
+                chunk_size,
+                ncclFloat,
+                j,
+                comm,
+                stream
+            ));
+        }
+    }
+    NCCLCHECK(ncclGroupEnd());
 
     // sync cuda stream
     CUDACHECK(cudaStreamSynchronize(stream));
@@ -181,13 +167,16 @@ int main(int argc, char* argv[]) {
     // check if allreduce correct
     std::vector<float> host_send_buffer(comm_size);
     std::vector<float> host_recv_buffer(comm_size);
-    checkCorrect(
+    bool success = checkCorrect(
         host_send_buffer,
         host_recv_buffer,
         send_buffer,
         recv_buffer,
         this_rank,
-        comm_size_byte
+        comm_size,
+        comm_size_byte,
+        chunk_size,
+        init_offset
     );
 
     // free send/recv buffer
@@ -203,10 +192,10 @@ int main(int argc, char* argv[]) {
     // finalize MPI
     MPICHECK(MPI_Finalize());
     
-    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" \
-    << " with device id " << device_id \
-    << " and nccl unique id " << ss.str() << "..." \
-    << "\n";
-
+    if (!success) {
+        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
+        return 1;
+    }
+    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
     return 0;
 }
