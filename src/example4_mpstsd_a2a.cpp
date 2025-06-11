@@ -9,9 +9,11 @@
 #include <numeric>
 #include "cuda.h"
 #include "cuda_runtime.h"
+#include <cuda_profiler_api.h>
 #include "nccl.h"
 #include "mpi.h"
 #include "init_send_buffer.h"
+#include "nvtx3/nvToolsExt.h"
 
 
 #define MPICHECK(cmd) do {                              \
@@ -138,6 +140,8 @@ int main(int argc, char* argv[]) {
     NCCLCHECK(ncclCommInitRank(&comm, num_ranks, nccl_uid, this_rank));
 
     // call nccl comm primitives
+    CUDACHECK(cudaProfilerStart());
+    nvtxRangePushA("nccl all2all");
     NCCLCHECK(ncclGroupStart());
     for (int i = 0; i < num_ranks; ++i) {
         for (int j = 0; j < num_ranks; ++j) {
@@ -160,6 +164,8 @@ int main(int argc, char* argv[]) {
         }
     }
     NCCLCHECK(ncclGroupEnd());
+    nvtxRangePop();
+    CUDACHECK(cudaProfilerStop());
 
     // sync cuda stream
     CUDACHECK(cudaStreamSynchronize(stream));
