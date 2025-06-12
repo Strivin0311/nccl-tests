@@ -74,8 +74,8 @@ bool checkCorrect(
         float expected_value = rank_id + init_offset;
         if (host_send_buffer[i] != expected_value) {
             std::cout << "For rank " << rank_id \
-            << " Unexpected value in send buffer at idx " << i << " : " \
-            << host_send_buffer[i] << " | " << expected_value \
+            << " Unexpected value in send buffer at idx " << i << " : actual=" \
+            << host_send_buffer[i] << " | expected=" << expected_value \
             << std::endl;
             send_buffer_correct = false;
         }
@@ -87,8 +87,8 @@ bool checkCorrect(
         float expected_value = chunk_id + init_offset;
         if (host_recv_buffer[i] != expected_value) {
             std::cout << "For rank " << rank_id \
-            << " Unexpected value in recv buffer at idx " << i << " : " \
-            << host_recv_buffer[i] << " | " << expected_value \
+            << " Unexpected value in recv buffer at idx " << i << " : actual=" \
+            << host_recv_buffer[i] << " | expected=" << expected_value \
             << std::endl;
             recv_buffer_correct = false;
         }
@@ -168,7 +168,7 @@ int main(int argc, char* argv[]) {
     // sync cuda stream
     CUDACHECK(cudaStreamSynchronize(stream));
 
-    // check if allreduce correct
+    // check if all2all correct
     std::vector<float> host_send_buffer(comm_size);
     std::vector<float> host_recv_buffer(comm_size);
     bool success = checkCorrect(
