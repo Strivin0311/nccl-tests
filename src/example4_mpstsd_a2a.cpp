@@ -143,25 +143,23 @@ int main(int argc, char* argv[]) {
     CUDACHECK(cudaProfilerStart());
     nvtxRangePushA("nccl all2all");
     NCCLCHECK(ncclGroupStart());
-    for (int i = 0; i < num_ranks; ++i) {
-        for (int j = 0; j < num_ranks; ++j) {
-            NCCLCHECK(ncclSend(
-                (const void*) (send_buffer + j * chunk_size),
-                chunk_size,
-                ncclFloat,
-                j,
-                comm,
-                stream
-            ));
-            NCCLCHECK(ncclRecv(
-                (void *) (recv_buffer + j * chunk_size),
-                chunk_size,
-                ncclFloat,
-                j,
-                comm,
-                stream
-            ));
-        }
+    for (int r = 0; r < num_ranks; ++r) {
+        NCCLCHECK(ncclSend(
+            (const void*) (send_buffer + r * chunk_size),
+            chunk_size,
+            ncclFloat,
+            r,
+            comm,
+            stream
+        ));
+        NCCLCHECK(ncclRecv(
+            (void *) (recv_buffer + r * chunk_size),
+            chunk_size,
+            ncclFloat,
+            r,
+            comm,
+            stream
+        ));
     }
     NCCLCHECK(ncclGroupEnd());
     nvtxRangePop();
@@ -203,5 +201,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
+    
     return 0;
 }
