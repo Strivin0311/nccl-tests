@@ -69,7 +69,7 @@ inline void assert_fail_msg(const char* msg) {
 
 
 // #define NATIVE_ALL2ALL
-
+#define NATIVE_ALL2ALL_V
 
 bool checkRecvCorrect(
     std::vector<int>& host_recv_buffer,
@@ -98,7 +98,7 @@ bool checkRecvCorrect(
             recv_buffer_correct = false;
         }
     }
-
+    
     return recv_buffer_correct;
 }
 
@@ -128,8 +128,10 @@ int main(int argc, char* argv[]) {
     // init send size
     #ifdef NATIVE_ALL2ALL
     int send_size = 4; // 4 ints
-    #else
+    #elifdef NATIVE_ALL2ALL_V
     int send_size = 8; // 8 ints
+    #else
+    int send_size = 4; // 4 ints
     #endif
     int send_size_byte = send_size * sizeof(int);
 
@@ -141,11 +143,16 @@ int main(int argc, char* argv[]) {
         //  r1: [4, 5, 6, 7]
         //  r2: [8, 9, 10, 11]
         //  r3: [12, 13, 14, 15]
-        #else
+        #elifdef NATIVE_ALL2ALL_V
         //  r0: [0, 1, 2, 3, 4, 5, 6, 7]
         //  r1: [8, 9, 10, 11, 12, 13, 14, 15]
         //  r2: [16, 17, 18, 19, 20, 21, 22, 23]
         //  r3: [24, 25, 26, 27, 28, 29, 30, 31]
+        #else
+        //  r0: [0, 1, 2, 3]
+        //  r1: [4, 5, 6, 7]
+        //  r2: [8, 9, 10, 11]
+        //  r3: [12, 13, 14, 15]
         #endif
         host_send_buffer[i] = i + this_rank * send_size;
     }
@@ -174,7 +181,7 @@ int main(int argc, char* argv[]) {
         {2, 6, 10, 14}, // rank2
         {3, 7, 11, 15}  // rank3
     };
-    #else
+    #elifdef NATIVE_ALL2ALL_V
     std::vector<std::vector<int>> input_split_size_per_rank = {
         {2, 2, 2, 2}, // rank0
         {1, 3, 1, 3}, // rank1
@@ -193,6 +200,23 @@ int main(int argc, char* argv[]) {
         {4, 5, 12, 20, 27, 28}, // rank2
         {6, 7, 13, 14, 15, 21, 22, 23, 29, 30, 31}  // rank3
     };
+    #else
+    std::vector<std::vector<int>> input_split_size_per_rank = {
+        {1, 1, 1, 1}, // rank0
+        {1, 1, 1, 1}, // rank1
+        {1, 1, 1, 1}, // rank2
+        {1, 1, 1, 1}  // rank3
+    };
+    std::vector<std::vector<int>> output_split_size_per_rank = {
+        {1, 1, 1, 1}, // rank0
+        {1, 1, 1, 1}, // rank1
+        {1, 1, 1, 1}, // rank2
+        {1, 1, 1, 1}  // rank3
+    };
+    std::vector<std::vector<int>> expected_recv_buffer_per_rank = {
+        {0, 4, 8, 12}, // rank0
+        {1, 5, 9, 13}, // rank1
+        {2, 6, 10, 14}, // rank2
     #endif
 
     // init meta args and expected recv buffer as ground truth for this rank
