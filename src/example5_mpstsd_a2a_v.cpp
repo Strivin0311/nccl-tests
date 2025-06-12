@@ -195,16 +195,16 @@ int main(int argc, char* argv[]) {
     };
     #endif
 
-    // init meta args and expected recv buffer as ground truth for this rank
+    // init meta args of all2all-v for this rank
     int* input_split_size = input_split_size_per_rank[this_rank].data();
     int num_input_splits = input_split_size_per_rank[this_rank].size();
 
     int* output_split_size = output_split_size_per_rank[this_rank].data();
     int num_output_splits = output_split_size_per_rank[this_rank].size();
-    std::vector<int> expected_recv_buffer = expected_recv_buffer_per_rank[this_rank];
 
-    // init recv size
-    int recv_size = expected_recv_buffer_per_rank[this_rank].size();
+    // init expected recv buffer as ground truth, as well as recv size, for this rank
+    std::vector<int> expected_recv_buffer = expected_recv_buffer_per_rank[this_rank];
+    int recv_size = expected_recv_buffer.size();
     int recv_size_byte = recv_size * sizeof(int);
 
     // allocate and init recv buffer on both host and device
@@ -240,6 +240,29 @@ int main(int argc, char* argv[]) {
     nvtxRangePushA("nccl all2all-v");
     NCCLCHECK(ncclGroupStart());
     int input_offset = 0, output_offset = 0;
+    /*  method1: 1-send, 1-recv */
+    // for (int r = 0; r < num_ranks; ++r) {
+    //     NCCLCHECK(ncclSend(
+    //         (const void*) (send_buffer + input_offset),
+    //         input_split_size[r],
+    //         ncclInt32,
+    //         r,
+    //         comm,
+    //         stream
+    //     ));
+    //     NCCLCHECK(ncclRecv(
+    //         (void *) (recv_buffer + output_offset),
+    //         output_split_size[r],
+    //         ncclInt32,
+    //         r,
+    //         comm,
+    //         stream
+    //     ));
+    //     input_offset += input_split_size[r];
+    //     output_offset += output_split_size[r];
+    // }
+
+    /*  method2: 1-send, n-recv */
     for (int r = 0; r < num_ranks; ++r) {
         NCCLCHECK(ncclSend(
             (const void*) (send_buffer + input_offset),
@@ -249,6 +272,9 @@ int main(int argc, char* argv[]) {
             comm,
             stream
         ));
+        input_offset += input_split_size[r];
+    }
+    for (int r = 0; r < num_ranks; ++r) {
         NCCLCHECK(ncclRecv(
             (void *) (recv_buffer + output_offset),
             output_split_size[r],
@@ -257,7 +283,6 @@ int main(int argc, char* argv[]) {
             comm,
             stream
         ));
-        input_offset += input_split_size[r];
         output_offset += output_split_size[r];
     }
     NCCLCHECK(ncclGroupEnd());
@@ -267,7 +292,7 @@ int main(int argc, char* argv[]) {
     // sync cuda stream
     CUDACHECK(cudaStreamSynchronize(stream));
 
-    // // check if all2all-v correct
+    // check if all2all-v correct
     bool success = checkRecvCorrect(
         host_recv_buffer,
         expected_recv_buffer,
@@ -276,6 +301,11 @@ int main(int argc, char* argv[]) {
         recv_size,
         recv_size_byte
     );
+    if (!success) {
+        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
+        return 1;
+    }
+    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
 
     // free send/recv buffer
     CUDACHECK(cudaFree(send_buffer));
@@ -289,12 +319,6 @@ int main(int argc, char* argv[]) {
 
     // finalize MPI
     MPICHECK(MPI_Finalize());
-    
-    if (!success) {
-        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
-        return 1;
-    }
-    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
 
     return 0;
 }

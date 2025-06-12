@@ -143,6 +143,27 @@ int main(int argc, char* argv[]) {
     CUDACHECK(cudaProfilerStart());
     nvtxRangePushA("nccl all2all");
     NCCLCHECK(ncclGroupStart());
+    /*  method1: 1-send, 1-recv */
+    // for (int r = 0; r < num_ranks; ++r) {
+    //     NCCLCHECK(ncclSend(
+    //         (const void*) (send_buffer + r * chunk_size),
+    //         chunk_size,
+    //         ncclFloat,
+    //         r,
+    //         comm,
+    //         stream
+    //     ));
+    //     NCCLCHECK(ncclRecv(
+    //         (void *) (recv_buffer + r * chunk_size),
+    //         chunk_size,
+    //         ncclFloat,
+    //         r,
+    //         comm,
+    //         stream
+    //     ));
+    // }
+
+    /*  method2: 1-send, n-recv */
     for (int r = 0; r < num_ranks; ++r) {
         NCCLCHECK(ncclSend(
             (const void*) (send_buffer + r * chunk_size),
@@ -152,6 +173,8 @@ int main(int argc, char* argv[]) {
             comm,
             stream
         ));
+    }
+    for (int r = 0; r < num_ranks; ++r) {
         NCCLCHECK(ncclRecv(
             (void *) (recv_buffer + r * chunk_size),
             chunk_size,
@@ -182,6 +205,11 @@ int main(int argc, char* argv[]) {
         chunk_size,
         init_offset
     );
+    if (!success) {
+        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
+        return 1;
+    }
+    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
 
     // free send/recv buffer
     CUDACHECK(cudaFree(send_buffer));
@@ -195,12 +223,6 @@ int main(int argc, char* argv[]) {
 
     // finalize MPI
     MPICHECK(MPI_Finalize());
-    
-    if (!success) {
-        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
-        return 1;
-    }
-    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
     
     return 0;
 }
