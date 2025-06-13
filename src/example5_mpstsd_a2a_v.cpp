@@ -70,7 +70,6 @@ inline void assert_fail_msg(const char* msg) {
 
 // #define NATIVE_ALL2ALL
 
-
 bool checkRecvCorrect(
     std::vector<int>& host_recv_buffer,
     std::vector<int>& expected_recv_buffer,

@@ -30,8 +30,8 @@ echo $SEP
 
 CMD="mpirun --allow-run-as-root -np $WORLD_SIZE $BUILD_PATH"
 
-$CMD
-exit
+# $CMD
+# exit
 
 nsys profile \
     -t cuda,nvtx \

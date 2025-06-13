@@ -69,7 +69,8 @@ inline void assert_fail_msg(const char* msg) {
 
 
 // #define NATIVE_ALL2ALL
-#define NATIVE_ALL2ALL_V
+// #define NATIVE_ALL2ALL_V
+
 
 bool checkRecvCorrect(
     std::vector<int>& host_recv_buffer,
@@ -85,7 +86,7 @@ bool checkRecvCorrect(
 
     // check recv buffer
     std::cout << "[Rank " << rank_id << "] " << "actual recv buffer: ";
-    for (int i = 0; i < recv_size; i++) {
+    for (int i = 0; i < recv_size; ++i) {
         std::cout << host_recv_buffer[i] << ", ";
     } std::cout << std::endl;
     
@@ -98,7 +99,7 @@ bool checkRecvCorrect(
             recv_buffer_correct = false;
         }
     }
-    
+
     return recv_buffer_correct;
 }
 
@@ -181,6 +182,18 @@ int main(int argc, char* argv[]) {
         {2, 6, 10, 14}, // rank2
         {3, 7, 11, 15}  // rank3
     };
+    std::vector<std::vector<std::vector<int>>> dst_indices_list_per_rank = {
+        {{0}, {1}, {2}, {3}}, // rank0
+        {{0}, {1}, {2}, {3}}, // rank1
+        {{0}, {1}, {2}, {3}}, // rank2
+        {{0}, {1}, {2}, {3}}  // rank3
+    };
+    std::vector<std::vector<int>> src_index_list_per_rank = {
+        {0, 1, 2, 3}, // rank0
+        {0, 1, 2, 3}, // rank1
+        {0, 1, 2, 3}, // rank2
+        {0, 1, 2, 3}  // rank3
+    };
     #elifdef NATIVE_ALL2ALL_V
     std::vector<std::vector<int>> input_split_size_per_rank = {
         {2, 2, 2, 2}, // rank0
@@ -200,35 +213,87 @@ int main(int argc, char* argv[]) {
         {4, 5, 12, 20, 27, 28}, // rank2
         {6, 7, 13, 14, 15, 21, 22, 23, 29, 30, 31}  // rank3
     };
+    std::vector<std::vector<std::vector<int>>> dst_indices_list_per_rank = {
+        {{0}, {1}, {2}, {3}}, // rank0
+        {{0}, {1}, {2}, {3}}, // rank1
+        {{0}, {1}, {2}, {3}}, // rank2
+        {{0}, {1}, {2}, {3}}  // rank3
+    };
+    std::vector<std::vector<int>> src_index_list_per_rank = {
+        {0, 1, 2, 3}, // rank0
+        {0, 1, 2, 3}, // rank1
+        {0, 1, 2, 3}, // rank2
+        {0, 1, 2, 3}  // rank3
+    };
     #else
     std::vector<std::vector<int>> input_split_size_per_rank = {
-        {1, 1, 1, 1}, // rank0
-        {1, 1, 1, 1}, // rank1
-        {1, 1, 1, 1}, // rank2
-        {1, 1, 1, 1}  // rank3
+        {2, 1, 1}, // rank0
+        {1, 1, 2}, // rank1
+        {1, 1, 2}, // rank2
+        {1, 1, 2}  // rank3
     };
     std::vector<std::vector<int>> output_split_size_per_rank = {
-        {1, 1, 1, 1}, // rank0
-        {1, 1, 1, 1}, // rank1
-        {1, 1, 1, 1}, // rank2
+        {1, 1, 1, 2}, // rank0
+        
+        // {2, 2, 1, 2}, // rank1 => BUG: recv number < send number, causing: [Rank 1] actual recv buffer: 0, 1, 10, 11, 2, 12, 0,
+        {2, 2, 1, 1, 1}, // rank1
+        
+        {1, 2, 2}, // rank2
+        
+        // {2, 2}  // rank3 => BUG: recv number < send number, causing: [Rank 3] actual recv buffer: 8, 0, 4, 0, 
         {1, 1, 1, 1}  // rank3
     };
     std::vector<std::vector<int>> expected_recv_buffer_per_rank = {
-        {0, 4, 8, 12}, // rank0
-        {1, 5, 9, 13}, // rank1
-        {2, 6, 10, 14}, // rank2
+        {5, 9, 13, 0, 1}, // rank0
+        {0, 1, 10, 11, 2, 12, 13}, // rank1
+        {2, 6, 7, 14, 15}, // rank2
+        {8, 9, 4, 5}  // rank3
+    };
+    // the transfer table w.r.t. number of packages of this group-cast is as follows:
+    // (send to) ->     rank0   rank1   rank2   rank3
+    // rank0            1       2       1       0
+    // rank1            1       0       1       2
+    // rank2            1       1       0       2
+    // rank3            1       2       1       0
+    // total recv       4       5       3       4
+
+    /* 
+    * NOTE: As nccl's requirements, the number of ncclRecv calls of each rank should be same as the `total recv` cell in the table
+    * i.e., if rankj receives n packages from ranki, then rankj should call ncclRecv() n times,
+    * even though these n packages are continuous in rankj's recv buffer and can be combined into one ncclRecv call
+    */
+    std::vector<std::vector<std::vector<int>>> dst_indices_list_per_rank = {
+        {{0, 1}, {1, 2}, {}}, // rank0
+        {{3}, {0, 3}, {2}}, // rank1
+        {{3}, {0, 3}, {1}}, // rank2
+        {{1}, {0, 1}, {2}}  // rank3
+    };
+    std::vector<std::vector<int>> src_index_list_per_rank = {
+        {1, 2, 3, 0}, // rank0
+        
+        // {0, 2, 0, 3}, // rank1 => BUG: recv number < send number, causing: [Rank 1] actual recv buffer: 0, 1, 10, 11, 2, 12, 0,
+        {0, 2, 0, 3, 3}, // rank1
+        
+        {0, 1, 3}, // rank2
+
+        // {2, 1}  // rank3 => BUG: recv number < send number, causing: [Rank 3] actual recv buffer: 8, 0, 4, 0, 
+        {2, 2, 1, 1}  // rank3
+    };
     #endif
 
-    // init meta args and expected recv buffer as ground truth for this rank
+    // init meta args of group-cast for this rank
     int* input_split_size = input_split_size_per_rank[this_rank].data();
     int num_input_splits = input_split_size_per_rank[this_rank].size();
 
     int* output_split_size = output_split_size_per_rank[this_rank].data();
     int num_output_splits = output_split_size_per_rank[this_rank].size();
-    std::vector<int> expected_recv_buffer = expected_recv_buffer_per_rank[this_rank];
 
-    // init recv size
-    int recv_size = expected_recv_buffer_per_rank[this_rank].size();
+    auto dst_indices_list = dst_indices_list_per_rank[this_rank];
+    auto src_index_list = src_index_list_per_rank[this_rank];
+
+    // init expected recv buffer as ground truth, as well as recv size, for this rank
+    std::vector<int> expected_recv_buffer = expected_recv_buffer_per_rank[this_rank];
+    int recv_size = expected_recv_buffer.size();
     int recv_size_byte = recv_size * sizeof(int);
 
     // allocate and init recv buffer on both host and device
@@ -239,19 +304,31 @@ int main(int argc, char* argv[]) {
     // initialization check
     std::cout << "[Rank " << this_rank << "] " << "send size: " << send_size << ", recv size: " << recv_size << std::endl;
     std::cout << "[Rank " << this_rank << "] " << "send buffer: ";
-    for (int i = 0; i < send_size; i++) {
+    for (int i = 0; i < send_size; ++i) {
         std::cout << host_send_buffer[i] << ", ";
     } std::cout << std::endl;
     std::cout << "[Rank " << this_rank << "] " << "input split size: ";
-    for (int i = 0; i < num_input_splits; i++) {
+    for (int i = 0; i < num_input_splits; ++i) {
         std::cout << input_split_size[i] << ", ";
     } std::cout << std::endl;
     std::cout << "[Rank " << this_rank << "] " << "output split size: ";
-    for (int i = 0; i < num_output_splits; i++) {
+    for (int i = 0; i < num_output_splits; ++i) {
         std::cout << output_split_size[i] << ", ";
     } std::cout << std::endl;
+    std::cout << "[Rank " << this_rank << "] " << "dst indices list: ";
+    for (auto dst_indices : dst_indices_list) {
+        std::cout << "{";
+        for (int dst_rank : dst_indices) {
+            std::cout << dst_rank << ",";
+        }
+        std::cout << "}, ";
+    } std::cout << std::endl;
+    std::cout << "[Rank " << this_rank << "] " << "src index list: ";
+    for (int a : src_index_list) {
+        std::cout << a << ", ";
+    } std::cout << std::endl;
     std::cout << "[Rank " << this_rank << "] " << "expected recv buffer: ";
-    for (int i = 0; i < recv_size; i++) {
+    for (int i = 0; i < recv_size; ++i) {
         std::cout << expected_recv_buffer[i] << ", ";
     } std::cout << std::endl;
 
@@ -261,29 +338,61 @@ int main(int argc, char* argv[]) {
 
     // call nccl comm primitives
     CUDACHECK(cudaProfilerStart());
-    nvtxRangePushA("nccl all2all-v");
+    nvtxRangePushA("nccl group-cast");
     NCCLCHECK(ncclGroupStart());
     int input_offset = 0, output_offset = 0;
-    for (int r = 0; r < num_ranks; ++r) {
-        NCCLCHECK(ncclSend(
-            (const void*) (send_buffer + input_offset),
-            input_split_size[r],
-            ncclInt32,
-            r,
-            comm,
-            stream
-        ));
+    // int input_split_idx = 0, output_split_idx = 0;
+    // for (auto dst_indices : dst_indices_list) {
+    //     for (int dst_rank : dst_indices) {
+    //         NCCLCHECK(ncclSend(
+    //             (const void*) (send_buffer + input_offset),
+    //             input_split_size[input_split_idx],
+    //             ncclInt32,
+    //             dst_rank,
+    //             comm,
+    //             stream
+    //         ));   
+    //     }
+    //     input_offset += input_split_size[input_split_idx];
+    //     input_split_idx++;
+    // }
+    // for (int src_rank : src_index_list) {
+    //     NCCLCHECK(ncclRecv(
+    //         (void *) (recv_buffer + output_offset),
+    //         output_split_size[output_split_idx],
+    //         ncclInt32,
+    //         src_rank,
+    //         comm,
+    //         stream
+    //     ));
+    //     output_offset += output_split_size[output_split_idx];
+    //     output_split_idx++;
+    // }
+    for (int input_split_idx = 0; input_split_idx < num_input_splits; ++input_split_idx) {
+        for (auto dst_rank : dst_indices_list[input_split_idx]) {
+            NCCLCHECK(ncclSend(
+                (const void*) (send_buffer + input_offset),
+                input_split_size[input_split_idx],
+                ncclInt32,
+                dst_rank,
+                comm,
+                stream
+            ));
+        }
+        input_offset += input_split_size[input_split_idx];
+    }
+    for (int output_split_idx = 0; output_split_idx < num_output_splits; ++output_split_idx) {
         NCCLCHECK(ncclRecv(
             (void *) (recv_buffer + output_offset),
-            output_split_size[r],
+            output_split_size[output_split_idx],
             ncclInt32,
-            r,
+            src_index_list[output_split_idx],
             comm,
             stream
         ));
-        input_offset += input_split_size[r];
-        output_offset += output_split_size[r];
+        output_offset += output_split_size[output_split_idx];
     }
+    
     NCCLCHECK(ncclGroupEnd());
     nvtxRangePop();
     CUDACHECK(cudaProfilerStop());
@@ -291,7 +400,7 @@ int main(int argc, char* argv[]) {
     // sync cuda stream
     CUDACHECK(cudaStreamSynchronize(stream));
 
-    // // check if all2all-v correct
+    // check if all2all-v correct
     bool success = checkRecvCorrect(
         host_recv_buffer,
         expected_recv_buffer,
@@ -300,6 +409,11 @@ int main(int argc, char* argv[]) {
         recv_size,
         recv_size_byte
     );
+    if (!success) {
+        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
+        return 1;
+    }
+    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
 
     // free send/recv buffer
     CUDACHECK(cudaFree(send_buffer));
@@ -313,12 +427,6 @@ int main(int argc, char* argv[]) {
 
     // finalize MPI
     MPICHECK(MPI_Finalize());
-    
-    if (!success) {
-        std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Failed" << "\n";
-        return 1;
-    }
-    std::cout << "[MPI Rank " << this_rank << " of " << num_ranks << " Ranks] Success" << "\n";
 
     return 0;
 }
